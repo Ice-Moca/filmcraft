@@ -1785,6 +1785,7 @@ dependencies = [
 name = "filmcraft-captions"
 version = "0.8.0"
 dependencies = [
+ "encoding_rs",
  "filmcraft-color",
  "filmcraft-project",
  "filmcraft-text",
@@ -2276,6 +2277,7 @@ dependencies = [
 name = "filmcraft-text"
 version = "0.8.0"
 dependencies = [
+ "encoding_rs",
  "filmcraft-color",
  "harfrust",
  "skrifa",

@@ -1637,12 +1637,12 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ParamValue::Text(f) => f,
                 _ => String::new(),
             };
-            let fams = filmcraft_text::families();
+            if !filmcraft_text::fonts::system_scanned() {
+                filmcraft_text::fonts::scan_system();
+            }
+            let fams: Vec<_> = filmcraft_text::families().into_iter().filter(|(f, _)| !f.starts_with('.')).collect();
             let (_, mut vui) = cx.row(ui, tl!("Font"));
             let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
-                if !filmcraft_text::fonts::system_scanned() {
-                    filmcraft_text::fonts::scan_system();
-                }
                 for (f, _) in &fams {
                     if ui.selectable_label(*f == family, f).clicked() {
                         cx.set("font", json!(f));
@@ -1650,7 +1650,8 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             });
             cx.auto("font", r.response.rect, "Font");
-            let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
+            let styles: Vec<String> =
+                fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family) || f.to_lowercase() == family.to_lowercase()).map(|(_, s)| s.clone()).unwrap_or_default();
             let (_, mut vui) = cx.row(ui, tl!("Font Style"));
             let r = egui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({

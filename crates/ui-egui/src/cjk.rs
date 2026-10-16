@@ -26,7 +26,23 @@ pub(crate) fn craft_fonts() -> impl Iterator<Item = &'static filmcraft_text::fon
 // Hangul: neither the UI fonts nor the Chinese/Japanese fallbacks have it, so typed, pasted and
 // IME-composed Korean drew as missing-glyph boxes (artcraft#2093).
 const KOREAN_SAMPLE: &str = "한국어입력테스트";
-const KOREAN_PREFERRED: &[&str] = &["Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans CJK KR", "Noto Sans KR", "Source Han Sans K", "NanumGothic"];
+const KOREAN_PREFERRED: &[&str] = &[
+    "Pretendard",
+    "Malgun Gothic",
+    "맑은 고딕",
+    "Apple SD Gothic Neo",
+    "애플 SD 산돌고딕 Neo",
+    "Noto Sans CJK KR",
+    "Noto Sans KR",
+    "Source Han Sans K",
+    "본고딕",
+    "NanumSquare",
+    "나눔스퀘어",
+    "NanumBarunGothic",
+    "나눔바른고딕",
+    "NanumGothic",
+    "나눔고딕",
+];
 
 fn system_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
@@ -35,7 +51,12 @@ fn system_font() -> Option<Arc<FontData>> {
 
 fn korean_font() -> Option<Arc<FontData>> {
     static FONT: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
-    FONT.get_or_init(|| find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)).clone()
+    FONT.get_or_init(|| {
+        // an installed Hangul face first (native look); the bundled Noto Sans KR otherwise
+        find_system_font(KOREAN_SAMPLE, KOREAN_PREFERRED)
+            .or_else(|| Some(Arc::new(FontData { font: std::borrow::Cow::Borrowed(filmcraft_text::fonts::NOTO_SANS_KR_REGULAR), index: 0, tweak: Default::default() })))
+    })
+    .clone()
 }
 
 /// A font collection's face index matters: Windows CJK UI fonts commonly live in TTC files.
@@ -48,7 +69,7 @@ fn find_system_font(sample: &str, preferred: &[&str]) -> Option<Arc<FontData>> {
     let faces: Vec<_> = filmcraft_text::fonts::all_faces().into_iter().filter(|f| f.info.origin == "system" && !f.info.italic).collect();
     let covers = |f: &filmcraft_text::fonts::Face| f.covers_text(sample);
     let by_weight = |f: &&Arc<filmcraft_text::fonts::Face>| f.info.weight.abs_diff(400);
-    let found = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(name) && covers(f)).min_by_key(by_weight));
+    let found = preferred.iter().find_map(|name| faces.iter().filter(|f| f.info.matches_family(name) && covers(f)).min_by_key(by_weight));
     let face = found.or_else(|| faces.iter().filter(|f| covers(f)).min_by_key(by_weight))?;
     Some(Arc::new(FontData { font: std::borrow::Cow::Owned(face.data()?), index: face.info.index, tweak: Default::default() }))
 }

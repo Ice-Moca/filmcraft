@@ -247,8 +247,8 @@ pub fn write(doc: &Document, format: Format, opts: WriteOptions) -> Vec<u8> {
     }
 }
 
-/// Decode text bytes: UTF-8 (BOM stripped), UTF-16 with BOM, else Windows-1252. Line endings are
-/// normalised to `\n`.
+/// Decode text bytes: UTF-8 (BOM stripped), UTF-16 with BOM, else CP949 / EUC-KR when the bytes
+/// decode cleanly and contain Hangul, else Windows-1252. Line endings are normalised to `\n`.
 pub fn decode_text(bytes: &[u8]) -> String {
     let s = if let Some(rest) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         String::from_utf8_lossy(rest).into_owned()
@@ -260,11 +260,21 @@ pub fn decode_text(bytes: &[u8]) -> String {
     } else {
         match std::str::from_utf8(bytes) {
             Ok(s) => s.to_string(),
-            Err(_) => bytes.iter().map(|&b| cp1252(b)).collect(),
+            Err(_) => decode_korean(bytes).unwrap_or_else(|| bytes.iter().map(|&b| cp1252(b)).collect()),
         }
     };
     let s = s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s);
     if s.contains('\r') { s.replace("\r\n", "\n").replace('\r', "\n") } else { s }
+}
+
+/// CP949 (a superset of EUC-KR) decode; `None` on any invalid sequence or when no Hangul syllable
+/// appears (so Western Windows-1252 text is not mistaken for Korean).
+fn decode_korean(bytes: &[u8]) -> Option<String> {
+    let (s, _, had_errors) = encoding_rs::EUC_KR.decode(bytes);
+    if had_errors || !s.chars().any(|c| ('\u{ac00}'..='\u{d7a3}').contains(&c)) {
+        return None;
+    }
+    Some(s.into_owned())
 }
 
 fn cp1252(b: u8) -> char {
@@ -378,6 +388,16 @@ mod tests {
         assert_eq!(decode_text(b"\xef\xbb\xbfa\r\nb\rc"), "a\nb\nc");
         assert_eq!(decode_text(&[0xff, 0xfe, b'h', 0, b'i', 0]), "hi");
         assert_eq!(decode_text(b"caf\xe9 \x93x\x94"), "café “x”");
+    }
+
+    #[test]
+    fn decode_cp949_korean() {
+        // "안녕하세요" in CP949 / EUC-KR
+        assert_eq!(decode_text(&[0xbe, 0xc8, 0xb3, 0xe7, 0xc7, 0xcf, 0xbc, 0xbc, 0xbf, 0xe4]), "안녕하세요");
+        // UTF-8 Korean is untouched
+        assert_eq!(decode_text("안녕".as_bytes()), "안녕");
+        // Western text without Hangul keeps the cp1252 fallback
+        assert_eq!(decode_text(b"caf\xe9"), "café");
     }
 
     #[test]

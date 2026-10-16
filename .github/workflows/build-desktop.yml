@@ -1,0 +1,82 @@
+name: Build Desktop (macOS & Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.8.0-kr.1)"
+        required: false
+        default: "v0.8.0-kr.1"
+  push:
+    tags:
+      - "v*-kr*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS (Universal .dmg)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-macos-universal
+      - name: Build and package macOS DMG
+        run: packaging/macos/package.sh --arch universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filmcraft-macos-universal
+          path: dist/release/*
+
+  windows:
+    name: Windows (x64 .msi & .zip)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-windows-x64
+      - name: Install WiX v5
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build and package Windows MSI & Portable ZIP
+        shell: pwsh
+        run: packaging/windows/package.ps1 -Arch x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filmcraft-windows-x64
+          path: dist/release/*
+
+  release:
+    name: Publish GitHub Release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" artifacts/* \
+              --repo "$REPO" \
+              --target "${{ github.sha }}" \
+              --title "FilmCraft $TAG (Korean Font & Subtitle Edition)" \
+              --notes "Korean font & CP949 subtitle optimized build for macOS (.dmg) and Windows (.msi / portable .zip)."
+          else
+            gh release upload "$TAG" artifacts/* --repo "$REPO" --clobber
+          fi

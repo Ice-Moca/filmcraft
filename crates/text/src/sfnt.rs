@@ -5,10 +5,12 @@
 use std::io::{Read, Seek, SeekFrom};
 
 /// Names and style attributes of one face in a font file.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FaceNames {
     pub index: u32,
     pub family: String,
+    /// Localized or alternate family names (e.g. Korean `"맑은 고딕"` alongside `"Malgun Gothic"`).
+    pub aliases: Vec<String>,
     pub style: String,
     pub full_name: String,
     pub weight: u16,
@@ -73,6 +75,14 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     let nb = read_at(r, no, nl)?;
     let get = |id: u16| name_string(&nb, id);
     let family = get(16).or_else(|| get(1))?;
+    let mut aliases = Vec::new();
+    for id in [16u16, 1u16] {
+        for s in all_name_strings(&nb, id) {
+            if s != family && !aliases.contains(&s) {
+                aliases.push(s);
+            }
+        }
+    }
     let style = get(17).or_else(|| get(2)).unwrap_or_else(|| "Regular".into());
     let full_name = get(4).unwrap_or_else(|| format!("{family} {style}"));
     let (mut weight, mut italic) = (400u16, false);
@@ -84,10 +94,74 @@ fn read_face<R: Read + Seek>(r: &mut R, off: u64, index: u32) -> Option<FaceName
     }
     let sl = style.to_ascii_lowercase();
     italic |= sl.contains("italic") || sl.contains("oblique");
-    Some(FaceNames { index, family, style, full_name, weight, italic })
+    Some(FaceNames { index, family, aliases, style, full_name, weight, italic })
 }
 
-/// A name-table string by id, preferring Windows Unicode English, then any Unicode, then Mac Roman.
+fn decode_name_record(plat: u16, enc: u16, lang: u16, raw: &[u8]) -> Option<(u8, String)> {
+    let (rank, s) = match plat {
+        3 if enc == 1 || enc == 10 => {
+            let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let r = if lang == 0x0409 { 0 } else if lang == 0x0412 { 1 } else { 2 };
+            (r, String::from_utf16_lossy(&u))
+        }
+        // Windows Wansung (Korean EUC-KR / CP949)
+        3 if enc == 5 => {
+            let (cow, _, had_errors) = encoding_rs::EUC_KR.decode(raw);
+            if had_errors {
+                return None;
+            }
+            (2, cow.into_owned())
+        }
+        0 => {
+            let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            (3, String::from_utf16_lossy(&u))
+        }
+        // Macintosh Korean (EUC-KR)
+        1 if enc == 3 => {
+            let (cow, _, had_errors) = encoding_rs::EUC_KR.decode(raw);
+            if had_errors {
+                return None;
+            }
+            (4, cow.into_owned())
+        }
+        1 if enc == 0 => (5, raw.iter().map(|&c| if c < 128 { c as char } else { '?' }).collect()),
+        _ => return None,
+    };
+    let trimmed = s.trim();
+    if trimmed.is_empty() { None } else { Some((rank, trimmed.to_string())) }
+}
+
+/// Every distinct non-empty string for `id` across languages/encodings in the `name` table.
+fn all_name_strings(b: &[u8], id: u16) -> Vec<String> {
+    let (Some(count), Some(storage)) = (be16(b, 2).map(usize::from), be16(b, 4).map(usize::from)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..count {
+        let r = 6 + i * 12;
+        let (Some(plat), Some(enc), Some(lang), Some(nid), Some(len), Some(off)) =
+            (be16(b, r), be16(b, r + 2), be16(b, r + 4), be16(b, r + 6), be16(b, r + 8).map(usize::from), be16(b, r + 10).map(usize::from))
+        else {
+            continue;
+        };
+        if nid != id {
+            continue;
+        }
+        let Some(raw) = b.get(storage + off..storage + off + len) else { continue };
+        // Only keep Unicode or Korean-encoded records as aliases (avoid lossy Mac Roman '?')
+        if plat == 1 && enc == 0 {
+            continue;
+        }
+        if let Some((_, s)) = decode_name_record(plat, enc, lang, raw)
+            && !out.contains(&s)
+        {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// A name-table string by id, preferring Windows Unicode English, then Korean/other Unicode, then Wansung/Mac.
 fn name_string(b: &[u8], id: u16) -> Option<String> {
     let count = be16(b, 2)? as usize;
     let storage = be16(b, 4)? as usize;
@@ -100,23 +174,12 @@ fn name_string(b: &[u8], id: u16) -> Option<String> {
             continue;
         }
         let raw = b.get(storage + off..storage + off + len)?;
-        let (rank, s) = match plat {
-            3 if enc == 1 || enc == 10 => {
-                let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
-                (if lang == 0x409 { 0 } else { 1 }, String::from_utf16_lossy(&u))
-            }
-            0 => {
-                let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
-                (2, String::from_utf16_lossy(&u))
-            }
-            1 if enc == 0 => (3, raw.iter().map(|&c| if c < 128 { c as char } else { '?' }).collect()),
-            _ => continue,
-        };
+        let Some((rank, s)) = decode_name_record(plat, enc, lang, raw) else { continue };
         if best.as_ref().is_none_or(|(r0, _)| rank < *r0) {
             best = Some((rank, s));
         }
     }
-    best.map(|(_, s)| s).filter(|s| !s.trim().is_empty())
+    best.map(|(_, s)| s)
 }
 
 #[cfg(test)]

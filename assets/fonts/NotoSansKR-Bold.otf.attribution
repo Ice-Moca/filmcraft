@@ -1,0 +1,8 @@
+asset:        NotoSansKR-Bold.otf
+title:        Noto Sans KR Bold (Hangul fallback face of the text engine)
+author:       The Noto Project Authors (Google / Adobe)
+source:       https://github.com/notofonts/noto-cjk (Sans/SubsetOTF/KR)
+license:      OFL-1.1
+license-file: assets/fonts/OFL-NotoSansKR.txt
+added:        2026-10-16 for Korean subtitle support
+notes:        Unmodified font file, bundled via include_bytes! in the text engine (crates/text/src/fonts.rs); covers Hangul for bold captions, titles and graphics.

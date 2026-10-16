@@ -1,0 +1,8 @@
+asset:        NotoSansKR-Regular.otf
+title:        Noto Sans KR Regular (Hangul fallback face of the text engine and UI)
+author:       The Noto Project Authors (Google / Adobe)
+source:       https://github.com/notofonts/noto-cjk (Sans/SubsetOTF/KR)
+license:      OFL-1.1
+license-file: assets/fonts/OFL-NotoSansKR.txt
+added:        2026-10-16 for Korean subtitle and interface support
+notes:        Unmodified font file, bundled via include_bytes! in the text engine (crates/text/src/fonts.rs); covers Hangul for captions, titles, graphics and as the interface's last-resort Hangul face (crates/ui-egui/src/cjk.rs).

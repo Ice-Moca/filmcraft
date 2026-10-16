@@ -22,6 +22,9 @@ pub static INTER_BOLD: &[u8] = include_bytes!("../../../assets/fonts/Inter-Bold.
 pub static INTER_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/Inter-Italic.ttf");
 pub static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
 pub static NOTO_SERIF_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/NotoSerif-Regular.ttf");
+/// Korean (Hangul + Hanja + Latin) sans faces, the Hangul fallback for every text.
+pub static NOTO_SANS_KR_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/NotoSansKR-Regular.otf");
+pub static NOTO_SANS_KR_BOLD: &[u8] = include_bytes!("../../../assets/fonts/NotoSansKR-Bold.otf");
 
 /// A font from the optional craft-fonts build input (empty unless built with `CRAFT_FONTS_DIR`; see
 /// `build.rs` and storytold/craft-fonts `docs/integration.md`).
@@ -63,6 +66,8 @@ pub enum FaceData {
 #[derive(Clone, Debug)]
 pub struct FaceInfo {
     pub family: String,
+    /// Localized or alternate family names (e.g. `"맑은 고딕"` for `"Malgun Gothic"`).
+    pub aliases: Vec<String>,
     pub style: String,
     pub weight: u16,
     pub italic: bool,
@@ -70,6 +75,14 @@ pub struct FaceInfo {
     pub data: FaceData,
     /// "bundled", "system", …
     pub origin: &'static str,
+}
+
+impl FaceInfo {
+    /// Whether `name` matches the primary family name or any localized alias (case-insensitive).
+    pub fn matches_family(&self, name: &str) -> bool {
+        let eq = |a: &str, b: &str| a.eq_ignore_ascii_case(b) || a.to_lowercase() == b.to_lowercase();
+        eq(&self.family, name) || self.aliases.iter().any(|a| eq(a, name))
+    }
 }
 
 /// Something that can list fonts (system folders, a web font picker, a project's font folder…).
@@ -143,7 +156,7 @@ impl FontSource for DirectorySource {
 }
 
 fn info_from(n: FaceNames, data: FaceData, origin: &'static str) -> FaceInfo {
-    FaceInfo { family: n.family, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
+    FaceInfo { family: n.family, aliases: n.aliases, style: n.style, weight: n.weight, italic: n.italic, index: n.index, data, origin }
 }
 
 /// A loaded (or loadable) face.
@@ -286,7 +299,7 @@ fn db() -> &'static RwLock<Db> {
     static DB: OnceLock<RwLock<Db>> = OnceLock::new();
     DB.get_or_init(|| {
         let mut db = Db { faces: Vec::new(), scanned: false };
-        for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR] {
+        for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR, NOTO_SANS_KR_REGULAR, NOTO_SANS_KR_BOLD] {
             for n in read_faces_bytes(b) {
                 push(&mut db, info_from(n, FaceData::Static(b), "bundled"));
             }
@@ -366,12 +379,19 @@ pub fn all_faces() -> Vec<Arc<Face>> {
 }
 
 /// Families with their style names, sorted by family; styles in weight order.
+/// Korean localized family aliases (e.g. `"맑은 고딕"`, `"나눔고딕"`) are also listed so users can
+/// pick Korean fonts by either their English or Korean name.
 pub fn families() -> Vec<(String, Vec<String>)> {
     let mut m: std::collections::BTreeMap<String, Vec<(bool, u16, String)>> = Default::default();
     for f in all_faces() {
-        let v = m.entry(f.info.family.clone()).or_default();
-        if !v.iter().any(|(_, _, s)| s == &f.info.style) {
-            v.push((f.info.italic, f.info.weight, f.info.style.clone()));
+        let names = std::iter::once(&f.info.family).chain(
+            f.info.aliases.iter().filter(|a| a.chars().any(|c| ('\u{ac00}'..='\u{d7a3}').contains(&c) || ('\u{3131}'..='\u{318e}').contains(&c))),
+        );
+        for fam_name in names {
+            let v = m.entry(fam_name.clone()).or_default();
+            if !v.iter().any(|(_, _, s)| s == &f.info.style) {
+                v.push((f.info.italic, f.info.weight, f.info.style.clone()));
+            }
         }
     }
     m.into_iter()
@@ -395,8 +415,8 @@ pub struct Resolved {
 
 fn style_wants(style: &str) -> (u16, bool) {
     let s = style.to_ascii_lowercase().replace([' ', '-'], "");
-    let italic = s.contains("italic") || s.contains("oblique");
-    let w = if s.contains("thin") || s.contains("hairline") {
+    let italic = s.contains("italic") || s.contains("oblique") || style.contains("기울임");
+    let w = if s.contains("thin") || s.contains("hairline") || style.contains("가는") {
         100
     } else if s.contains("extralight") || s.contains("ultralight") {
         200
@@ -410,7 +430,7 @@ fn style_wants(style: &str) -> (u16, bool) {
         800
     } else if s.contains("black") || s.contains("heavy") {
         900
-    } else if s.contains("bold") {
+    } else if s.contains("bold") || style.contains("굵게") || style.contains("볼드") {
         700
     } else {
         400
@@ -418,8 +438,9 @@ fn style_wants(style: &str) -> (u16, bool) {
     (w, italic)
 }
 
-/// Resolve a family + style name. Family matching is case-insensitive; a style that the family
-/// lacks picks the nearest weight and synthesises bold (≥ 600 requested, ≤ 500 found) or italic.
+/// Resolve a family + style name. Family matching is case-insensitive and also checks localized
+/// aliases (e.g. Korean family names); a style that the family lacks picks the nearest weight and
+/// synthesises bold (≥ 600 requested, ≤ 500 found) or italic.
 pub fn resolve(family: &str, style: &str) -> Resolved {
     if let Some(r) = resolve_in(family, style) {
         return r;
@@ -437,11 +458,11 @@ pub fn resolve(family: &str, style: &str) -> Resolved {
 
 fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
     let faces = all_faces();
-    let fam: Vec<&Arc<Face>> = faces.iter().filter(|f| f.info.family.eq_ignore_ascii_case(family)).collect();
+    let fam: Vec<&Arc<Face>> = faces.iter().filter(|f| f.info.matches_family(family)).collect();
     if fam.is_empty() {
         return None;
     }
-    if let Some(f) = fam.iter().find(|f| f.info.style.eq_ignore_ascii_case(style)) {
+    if let Some(f) = fam.iter().find(|f| f.info.style.eq_ignore_ascii_case(style) || f.info.style == style) {
         return Some(Resolved { face: f.id, synth_bold: false, synth_italic: false, missing: false });
     }
     let (w, it) = style_wants(style);
@@ -452,11 +473,18 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
     Some(Resolved { face: best.id, synth_bold: w >= 600 && best.info.weight <= 500, synth_italic: it && !best.info.italic, missing: false })
 }
 
-/// Whether a family name reads as a serif face (Noto Serif, Shippori Mincho, …), to pick a Mincho
-/// fallback for serif text and a Gothic one otherwise.
+/// Whether a family name reads as a serif face (Noto Serif, Shippori Mincho, Batang, Myeongjo, …),
+/// to pick a Mincho/Myeongjo fallback for serif text and a Gothic one otherwise.
 fn is_serif(family: &str) -> bool {
     let f = family.to_ascii_lowercase();
-    (f.contains("serif") && !f.contains("sans")) || f.contains("mincho")
+    (f.contains("serif") && !f.contains("sans"))
+        || f.contains("mincho")
+        || f.contains("batang")
+        || f.contains("myungjo")
+        || f.contains("myeongjo")
+        || family.contains("명조")
+        || family.contains("바탕")
+        || family.contains("궁서")
 }
 
 /// A face that covers `c`, preferring `prefer`; bundled, craft-fonts and already-registered faces
@@ -470,6 +498,11 @@ pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
     // prefer a face of the same italic-ness that is bundled (cheap), then anything loaded already
     for f in faces.iter().filter(|f| f.info.origin == "bundled") {
         if f.has_char(c) {
+            // Korean: choose the nearest weight (Regular / Bold) to the face being replaced
+            if f.info.family == "Noto Sans KR" {
+                let best = faces.iter().filter(|g| g.info.origin == "bundled" && g.info.family == f.info.family && g.has_char(c)).min_by_key(|g| g.info.weight.abs_diff(p.info.weight));
+                return best.map_or(f.id, |g| g.id);
+            }
             return f.id;
         }
     }
@@ -493,6 +526,18 @@ pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hangul_falls_back_to_bundled_noto_sans_kr() {
+        let regular = resolve("Inter", "Regular").face;
+        let bold = resolve("Inter", "Bold").face;
+        let r = face(fallback_for('한', regular));
+        let b = face(fallback_for('글', bold));
+        assert_eq!(r.info.family, "Noto Sans KR");
+        assert_eq!(b.info.family, "Noto Sans KR");
+        assert!(b.info.weight > r.info.weight, "bold Hangul uses the bold face");
+        assert_eq!(r.info.origin, "bundled");
+    }
 
     #[test]
     fn bundled_families_and_resolution() {
@@ -588,6 +633,7 @@ mod tests {
         std::fs::write(&path, INTER_REGULAR).expect("write temp font");
         let info = FaceInfo {
             family: "Inter".into(),
+            aliases: Vec::new(),
             style: "Regular".into(),
             weight: 400,
             italic: false,
